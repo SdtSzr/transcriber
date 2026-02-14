@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Offline Transcriber</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: 2rem auto; }
+    .row { margin-bottom: 1rem; }
+    pre { background: #f5f5f5; padding: 1rem; white-space: pre-wrap; }
+    .muted { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Offline Transcriber + Speaker Labeling</h1>
+  <div class="row">
+    <input type="file" id="file" accept=".mp3,.wav,.m4a" />
+    <button id="upload">Upload & Start</button>
+  </div>
+  <div class="row muted" id="status">No job yet.</div>
+  <div class="row" id="downloads" style="display:none;">
+    <a id="jsonLink" href="#">Download JSON</a> |
+    <a id="srtLink" href="#">Download SRT</a>
+  </div>
+  <h3>Transcript</h3>
+  <pre id="transcript"></pre>
+
+<script>
+let currentJobId = null;
+
+function renderSegments(segments) {
+  if (!segments || segments.length === 0) {
+    document.getElementById('transcript').textContent = 'No transcript yet.';
+    return;
+  }
+  const lines = segments.map(s => `[${s.start.toFixed(2)} - ${s.end.toFixed(2)}] ${s.speaker}: ${s.text}`);
+  document.getElementById('transcript').textContent = lines.join('\n');
+}
+
+async function pollJob(jobId) {
+  const statusEl = document.getElementById('status');
+  const downloads = document.getElementById('downloads');
+  while (true) {
+    const res = await fetch(`/api/jobs/${jobId}`);
+    const data = await res.json();
+    statusEl.textContent = `${data.status}: ${data.message}`;
+    renderSegments(data.segments || []);
+
+    if (data.status === 'completed') {
+      downloads.style.display = 'block';
+      document.getElementById('jsonLink').href = `/api/jobs/${jobId}/result.json`;
+      document.getElementById('srtLink').href = `/api/jobs/${jobId}/result.srt`;
+      return;
+    }
+    if (data.status === 'failed') return;
+
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+document.getElementById('upload').addEventListener('click', async () => {
+  const fileInput = document.getElementById('file');
+  if (!fileInput.files.length) {
+    alert('Select an audio file first.');
+    return;
+  }
+
+  const form = new FormData();
+  form.append('file', fileInput.files[0]);
+
+  const res = await fetch('/api/jobs', { method: 'POST', body: form });
+  const data = await res.json();
+  if (!res.ok) {
+    document.getElementById('status').textContent = `Error: ${data.detail || 'Unknown error'}`;
+    return;
+  }
+  currentJobId = data.job_id;
+  document.getElementById('status').textContent = `queued: ${currentJobId}`;
+  document.getElementById('downloads').style.display = 'none';
+  pollJob(currentJobId);
+});
+</script>
+</body>
+</html>
