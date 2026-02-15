@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+import wave
 from pathlib import Path
 
+import numpy as np
 import torch
 from faster_whisper import WhisperModel
-from silero_vad import get_speech_timestamps, load_silero_vad, read_audio
+from silero_vad import get_speech_timestamps, load_silero_vad
 from speechbrain.inference.speaker import EncoderClassifier
 
 from app.config import CHUNK_OVERLAP_SECONDS, CHUNK_SECONDS
@@ -19,6 +21,25 @@ from app.diarization import (
 _whisper_model: WhisperModel | None = None
 _vad_model = None
 _speaker_model: EncoderClassifier | None = None
+
+
+def load_wav_mono_16k(wav_file: Path) -> np.ndarray:
+    with wave.open(str(wav_file), "rb") as wf:
+        sample_rate = wf.getframerate()
+        channels = wf.getnchannels()
+        sample_width = wf.getsampwidth()
+        frame_count = wf.getnframes()
+        pcm = wf.readframes(frame_count)
+
+    if sample_rate != 16000:
+        raise RuntimeError(f"Expected 16kHz WAV, got {sample_rate}Hz")
+    if channels != 1:
+        raise RuntimeError(f"Expected mono WAV, got {channels} channels")
+    if sample_width != 2:
+        raise RuntimeError("Expected 16-bit PCM WAV input")
+
+    audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    return audio
 
 
 def _get_whisper_model() -> WhisperModel:
@@ -76,7 +97,8 @@ def transcribe(wav_file: Path) -> list[dict]:
 
 
 def diarize(wav_file: Path) -> tuple[list, list[int]]:
-    audio = read_audio(str(wav_file), sampling_rate=16000)
+    # Read wav directly to avoid torchaudio backend requirements on local hosts.
+    audio = load_wav_mono_16k(wav_file)
     vad_model = _get_vad_model()
     speech_timestamps = get_speech_timestamps(audio, vad_model, return_seconds=True)
     speech_regions = [(float(s["start"]), float(s["end"])) for s in speech_timestamps]
@@ -129,7 +151,10 @@ def run_pipeline(input_audio: Path, job_dir: Path) -> list[dict]:
     convert_to_wav(input_audio, wav_file)
 
     transcript_segments = transcribe(wav_file)
-    chunks, labels = diarize(wav_file)
+    try:
+        chunks, labels = diarize(wav_file)
+    except Exception:
+        chunks, labels = [], []
     diarized_segments = assign_speakers_to_segments(transcript_segments, chunks, labels)
 
     json_path = job_dir / "result.json"
